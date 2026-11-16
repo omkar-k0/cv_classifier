@@ -1,6 +1,6 @@
 # PLAN.md — CV-Abgleich Demo (version B)
 
-Status: draft, waiting for "go". No code is written until then.
+Status: open questions answered (see §14). Waiting for "go" before any code.
 
 ## 0. What exists today
 
@@ -55,11 +55,11 @@ Versions are what PyPI/npm return today (2026-11-16). They get pinned in a lockf
 | PII | presidio-analyzer / -anonymizer | 2.2.366 | MIT | spaCy NLP engine, German |
 | NER | spaCy + `de_core_news_lg` | 3.8.18 / 3.8.0 | MIT / MIT | lg ≈ 570 MB wheel. Labels PER, LOC, ORG, MISC. Download from GitHub releases works from this session. |
 | Fuzzy | rapidfuzz | 3.14.6 | MIT | skill alias and heading matching |
-| Embeddings | sentence-transformers + `intfloat/multilingual-e5-small` | 6.3.0 | Apache-2.0 / MIT | 384-dim, 12-layer XLM-R based, ~470 MB on disk, needs `query:` / `passage:` prefixes. Alternative: `paraphrase-multilingual-MiniLM-L12-v2` (Apache-2.0, similar size). I pick e5-small; the eval can compare both cheaply. Param count and card details still to confirm on the model card (huggingface.co is blocked here, see §10). |
+| Embeddings | sentence-transformers + `intfloat/multilingual-e5-small` | 6.3.0 | Apache-2.0 / MIT | 117.7M params (confirmed on the model card), 384-dim, ~470 MB on disk, needs `query:` / `passage:` prefixes. Alternative: `paraphrase-multilingual-MiniLM-L12-v2` (Apache-2.0, similar size); the eval can compare both cheaply. |
 | PDF out | WeasyPrint + Jinja2 | 70.0 / 3.1.6 | BSD-3 / BSD-3 | HTML template reused for the on-screen profile; needs pango in the Docker image |
 | Synthetic CVs | ReportLab + Faker (de_DE) | 5.1.0 / 40.54.0 | BSD / MIT | dev-only dependency |
 | Hosted LLM | Anthropic SDK | anthropic 2.8.0 | MIT | model ID from the provider docs, see §6 |
-| Local LLM | Ollama + `ollama` Python client | 0.6.3 | MIT | model `qwen3:8b` (Apache-2.0, ~5 GB Q4) with `qwen3:4b` (~2.5 GB) as the small option; tags to confirm on ollama.com (blocked here) |
+| Local LLM | Ollama + `ollama` Python client | 0.6.3 | MIT | model `qwen3:8b`: 5.2 GB, Apache-2.0 (confirmed from the registry manifest) |
 | Tests | pytest | 9.2.0 | MIT | |
 | Frontend | Next.js / React | 16.4.6 / 19.3.1 | MIT | App Router |
 | Styling | Tailwind CSS / shadcn CLI | 4.3.5 / 4.23.0 | MIT | Tabs, Table, Badge, Button, Textarea |
@@ -89,7 +89,7 @@ All offsets are character offsets into one canonical string per document.
    - b. **regel:** a skill/certificate lexicon (aliases, e.g. `SAP FI` = `SAP FI/CO`, `AWS SAA` = `AWS Certified Solutions Architect – Associate`, `Bilanzbuchhalter (IHK)`). If the requirement is *only* a skill or cert term (no years, no level, no "Erfahrung in der Führung …") and an alias hits a CV line by word-boundary regex or rapidfuzz ≥ threshold, then "erfüllt", method "regel", evidence = that line. Requirements with quantities ("5 Jahre Python", "verhandlungssicheres Englisch") do not go through rules.
    - c. **embedding:** best similarity < `SIM_FLOOR` → "nicht belegt", method "embedding", no LLM call.
    - d. **llm:** the requirement + the 3 lines only. Returns `{status, evidence_quote, confidence}` via JSON schema.
-7. **Quote check.** `evidence_quote` must be a substring of the anonymised CV text *and* of one of the 3 lines sent. Fail → status "nicht belegt", `quote_check_failed = true`, shown in the UI. Matching is exact after one normalisation only: collapse whitespace runs (Docling line breaks). Open question Q4.
+7. **Quote check.** `evidence_quote` must be a substring of the anonymised CV text *and* of one of the 3 lines sent. Fail → status "nicht belegt", `quote_check_failed = true`, shown in the UI. Decision (Q4): tolerant. Both sides are normalised (whitespace runs collapsed, hyphenation at line breaks joined, typographic quotes and dashes unified, case folded), then the quote must match a span of the sent lines with rapidfuzz `partial_ratio` ≥ `QUOTE_MIN_RATIO` (start 95, set from the eval). The evidence shown in the UI is always the matched span copied from the anonymised CV, never the model's own wording, so what the recruiter reads is verbatim CV text. Rows that pass only through the tolerant path are counted separately in the eval.
 8. **Render.** Kurzprofil (3 lines) built by template from structured data (current/last role, years of experience computed from dates, top skills), no LLM. Then Berufserfahrung, Ausbildung, Kenntnisse, Sprachen. Formal German register, neutral wording. PDF via WeasyPrint from the same Jinja2 template.
 
 `RunStats` per request: rows by method, share without LLM, LLM calls, input/output tokens, cost estimate, latency per stage, provider and model.
@@ -107,7 +107,7 @@ class LLMProvider(Protocol):
 ```
 
 - `PromptTask` is provider-neutral: a task name, German instruction text, and input fields. Each provider turns it into its own wire format. No provider-specific prompt syntax outside `llm/anthropic_provider.py` and `llm/ollama_provider.py`.
-- Chosen by one env var: `LLM_PROVIDER=anthropic|ollama`. Model IDs in env (`ANTHROPIC_MODEL`, `OLLAMA_MODEL`).
+- Chosen by one env var: `LLM_PROVIDER=anthropic|ollama` (later `openrouter`). OpenRouter is the planned next hosted option: a third class behind the same interface, no change to the pipeline. Its host must be allowed and its own data-handling terms checked before use. Model IDs in env (`ANTHROPIC_MODEL`, `OLLAMA_MODEL`).
 - Anthropic: structured output with a JSON schema (`output_config.format`), effort `low` for the per-row checks. Current models refuse a disabled-thinking setting, so thinking tokens are billed and counted in the cost.
 - Ollama: JSON-schema `format` on `/api/chat`, temperature 0; I will check this against the current Ollama API docs at step 4.
 - Both validate the returned JSON with Pydantic; one retry on invalid JSON, then the row becomes "nicht belegt" and is flagged.
@@ -123,7 +123,7 @@ Model IDs and prices from the provider docs (platform.claude.com, models overvie
 | Claude Sonnet 5.5 | `claude-sonnet-5-5` | 2.00 | 10.00 |
 | Claude Haiku 5.5 | `claude-haiku-5-5` | from 0.10 | from 0.50 |
 
-My default is `claude-opus-5-5`. Picking a cheaper model is your call (Q1); the provider code is the same.
+Decision (Q1): Sonnet 5.5 and Haiku 5.5 for now. `ANTHROPIC_MODEL` defaults to `claude-sonnet-5-5`; the eval runs both and the numbers decide which one the demo uses. Opus 5.5 is not used.
 
 Estimate per CV (one CV against one JD), before any measurement. Assumptions: 12 requirements, about half reach the LLM (6 calls × ~550 in / ~380 out incl. thinking), one prose-JD split call (1,000 / 800), structuring fallback on ~30 % of CVs (1,500 / 1,200).
 That gives ≈ 4,750 input and ≈ 3,450 output tokens.
@@ -142,7 +142,8 @@ Thinking length is the main unknown; plan for up to 2× these numbers. Before th
 
 ## 8. Eval
 
-- You supply 5 JDs. I propose a gold requirement list per JD (`data/jobs/<jd>.requirements.csv`) for you to approve, so labels point at stable `req_id`s. Requirement splitting is scored separately against that list.
+- Decision (Q9): until your 5 JDs arrive I draft 5 synthetic JDs (2 IT, 2 Finance, 1 mixed, bullets and prose) in `data/jobs/synthetic/` for development. Reported numbers will use your JDs only, and the README will say which set produced which table.
+- For each JD I propose a gold requirement list per JD (`data/jobs/<jd>.requirements.csv`) for you to approve, so labels point at stable `req_id`s. Requirement splitting is scored separately against that list.
 - `eval/labels.csv`: `cv_id, jd_id, req_id, expected_status` (you fill this by hand; I generate the empty sheet).
 - Split: 10 CVs dev (tune `SIM_FLOOR` and `CONF_THRESHOLD`), 10 CVs test (report). Thresholds are chosen on dev only (Q5).
 - Report (Markdown tables, copied into the README):
@@ -162,7 +163,7 @@ One page, German labels. Left: CV upload (PDF/DOCX) or text paste, JD textarea, 
 
 ## 10. Hosting, and where the stack does not fit
 
-- **Frontend:** Vercel Hobby. Caveat: Vercel's Hobby plan is for non-commercial use. A demo shown to a client agency may count as commercial; then it needs Pro (Q6).
+- **Frontend:** Vercel Hobby (Q6: it's a non-commercial demo).
 - **Backend memory estimate:** torch + Docling layout model + spaCy lg + e5-small ≈ 3–4 GB peak RSS (estimate from third-party figures, to be measured at step 2). Image ≈ 2.5–3 GB with CPU torch.
 - **Does not fit:** Vercel functions; Render free (512 MB, 0.1 vCPU); Koyeb (no clear free compute tier any more per current reports); Cloud Run free tier only on paper (cold start loading 3 GB of models on each scale-up, card required).
 - **Proposal: Hugging Face Spaces, Docker SDK, CPU Basic: 2 vCPU, 16 GB RAM, free, sleeps after 48 h idle.** That fits with room. Risks: forum reports from mid-2026 describe unannounced restrictions on free Docker Spaces, which I could not confirm (the HF docs are blocked in this session); a cold start after sleep takes about a minute; the Space URL is public. Fallback: a small EU VPS (e.g. Hetzner, ~4 GB RAM, a few €/month, EU data location) running the same docker-compose. Price to check on the day.
@@ -191,19 +192,21 @@ No hosted-only features (no web search, Files API, batches) in the pipeline; pro
 7. **Free hosting is unstable** (see §10).
 8. **Ollama eval latency.** This container has 4 CPU, no GPU. `qwen3:8b` on CPU will take seconds per row; the latency table will reflect CPU-only hardware and I will label it that way.
 9. **Gendered job titles** ("Buchhalterin") reveal gender after anonymisation. Option: keep as written, or normalise to a neutral form in the profile (Q3).
-10. **Session network.** huggingface.co, ollama.com and the Ollama registry are blocked in this cloud session. Without them I cannot download the Docling layout models, the embedding model or any Ollama model, so steps 2, 4 and 6 are blocked until those hosts are allowed (Q7).
+10. **Session network.** Resolved: the model hosts are now allowed (Q7).
 
-## 14. Open questions
+## 14. Decisions (answered 2026-11-16)
 
-- **Q1 Hosted provider and model.** Anthropic with `claude-opus-5-5` (my default), or a cheaper Sonnet/Haiku 5.5? Cost table in §6.
-- **Q2 Data location.** Is global/US inference of anonymised text acceptable for the demo?
-- **Q3 What gets removed.** Proposal: remove names, contact data, addresses, DOB/age, birthplace, nationality, marital status, religion, photo, URLs. Keep employers, universities, cities of employers. Normalise gendered titles: yes/no?
-- **Q4 Quote check.** Exact substring after whitespace collapse only, or also tolerate hyphenation/quote-mark differences?
-- **Q5 Threshold tuning.** OK with 10 dev / 10 test CVs?
-- **Q6 Vercel plan.** Is Hobby acceptable for this demo given its non-commercial terms?
-- **Q7 Network.** May I propose adding `huggingface.co` (+ its CDN hosts), `ollama.com` and `registry.ollama.ai` to this session's environment? I will also need an Anthropic API key, entered through the secure credential form, before the 3-CV pilot.
-- **Q8 Ollama model.** `qwen3:8b` (better German, slower) or `qwen3:4b`?
-- **Q9 Job descriptions.** When will the 5 JDs arrive? I can draft synthetic ones in the meantime for development only, never for the reported numbers.
+| # | Question | Decision |
+|---|---|---|
+| Q1 | Hosted model | Sonnet 5.5 / Haiku 5.5 via Anthropic now; OpenRouter or local hosting later |
+| Q2 | Global/US inference of anonymised text | Accepted for the demo |
+| Q3 | What gets removed | As proposed: names, contact data, addresses, DOB/age, birthplace, nationality, marital status, religion, photo, URLs removed; employers, universities and employer cities kept. Gendered titles: no explicit answer, so kept as written for now; easy to switch later |
+| Q4 | Quote check | Tolerant, as defined in §4 step 7 |
+| Q5 | Threshold tuning | 10 dev / 10 test CVs |
+| Q6 | Vercel plan | Hobby |
+| Q7 | Network | huggingface.co, cdn-lfs.hf.co, cas-bridge.xethub.hf.co, ollama.com, registry.ollama.ai allowed; Anthropic API key requested through the secure form before the 3-CV pilot |
+| Q8 | Ollama model | `qwen3:8b` |
+| Q9 | Job descriptions | Synthetic drafts for development until yours arrive |
 
 ## 15. Order of work
 
